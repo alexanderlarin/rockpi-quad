@@ -4,6 +4,19 @@ checkReboot() {
   echo Installation will take effect after reboot!!!
 }
 
+install_env() {
+  # Never clobber an existing env: only migrate legacy chip values
+  # to the /dev/gpiochipN paths required by libgpiod v2.
+  if [ -f /etc/rockpi-quad.env ]; then
+    sed -i -E \
+      -e 's#^(BUTTON_CHIP|SATA_CHIP|FAN_CHIP)=gpiochip([0-9]+)$#\1=/dev/gpiochip\2#' \
+      -e 's#^(BUTTON_CHIP|SATA_CHIP|FAN_CHIP)=([0-9]+)$#\1=/dev/gpiochip\2#' \
+      /etc/rockpi-quad.env
+  else
+    mv "$1" /etc/rockpi-quad.env
+  fi
+}
+
 is_armbian() {
   if [ -f /boot/armbianEnv.txt ] || [ -f /boot/dietpiEnv.txt ]; then
     echo true
@@ -47,16 +60,16 @@ case "$model" in
   if ! grep -q "dtoverlay=pwm-2chan,pin=12,func=4,pin2=13,func2=4" /boot/firmware/config.txt; then
     echo "dtoverlay=pwm-2chan,pin=12,func=4,pin2=13,func2=4" >> /boot/firmware/config.txt
   fi
-  mv /usr/bin/rockpi-quad/env/rpi4.env /etc/rockpi-quad.env
+  install_env /usr/bin/rockpi-quad/env/rpi4.env
   checkReboot
   ;;
 *"Radxa ROCK 4C+"*)
   if [ "$(is_armbian)" = "true" ]; then
     armbian_require_overlay rk3399-i2c7
-    cp /usr/bin/rockpi-quad/env/rock_pi_4_armbian.env /etc/rockpi-quad.env
+    install_env /usr/bin/rockpi-quad/env/rock_pi_4_armbian.env
   else
     mv /boot/dtbo/rk3399-i2c7.dtbo.disabled /boot/dtbo/rk3399-i2c7.dtbo || true
-    cp /usr/bin/rockpi-quad/env/rock_pi_4.env /etc/rockpi-quad.env
+    install_env /usr/bin/rockpi-quad/env/rock_pi_4.env
     u-boot-update || true
   fi
   checkReboot

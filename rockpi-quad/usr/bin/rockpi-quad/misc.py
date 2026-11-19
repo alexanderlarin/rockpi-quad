@@ -10,6 +10,53 @@ import gpiod
 from configparser import ConfigParser
 from collections import defaultdict, OrderedDict
 
+# libgpiod v2 (Debian 13 / trixie) replaced the v1 Python API entirely.
+GPIOD_V2 = hasattr(gpiod, 'LineSettings')
+
+
+def chip_path(chip):
+    """Resolve a chip number, name or path to a device path accepted by both APIs."""
+    chip = str(chip)
+    if chip.startswith('/'):
+        return chip
+    if chip.startswith('gpiochip'):
+        return f'/dev/{chip}'
+    return f'/dev/gpiochip{chip}'
+
+
+class OutputLine:
+    """Single GPIO output line working with both gpiod v1 and v2 APIs."""
+
+    def __init__(self, chip, offset, consumer, value=0):
+        self.offset = offset
+        path = chip_path(chip)
+        if GPIOD_V2:
+            self._chip = gpiod.Chip(path)
+            settings = gpiod.LineSettings(
+                direction=gpiod.line.Direction.OUTPUT,
+                output_value=gpiod.line.Value(int(value)),
+            )
+            self._request = self._chip.request_lines(
+                consumer=consumer, config={offset: settings})
+        else:
+            self._line = gpiod.Chip(path).get_line(offset)
+            self._line.request(consumer=consumer,
+                               type=gpiod.LINE_REQ_DIR_OUT)
+            self._line.set_value(int(value))
+
+    def set_value(self, value):
+        if GPIOD_V2:
+            self._request.set_value(self.offset,
+                                    gpiod.line.Value(int(value)))
+        else:
+            self._line.set_value(int(value))
+
+    def get_value(self):
+        if GPIOD_V2:
+            # gpiod.line.Value is a plain Enum with __bool__ defined.
+            return int(bool(self._request.get_value(self.offset)))
+        return self._line.get_value()
+
 cmds = {
     'blk': "lsblk | awk '{print $1}'",
     'up': "echo Uptime: `uptime | sed 's/.*up \\([^,]*\\), .*/\\1/'`",
@@ -74,10 +121,10 @@ def read_conf():
     except Exception:
         traceback.print_exc()
         # fan
-        conf['fan']['lv0'] = 35
-        conf['fan']['lv1'] = 40
-        conf['fan']['lv2'] = 45
-        conf['fan']['lv3'] = 50
+        conf['fan']['lv0'] = 50
+        conf['fan']['lv1'] = 58
+        conf['fan']['lv2'] = 65
+        conf['fan']['lv3'] = 70
         # key
         conf['key']['click'] = 'slider'
         conf['key']['twice'] = 'switch'
@@ -95,15 +142,11 @@ def read_conf():
 
 
 def read_key(pattern, size):
-    CHIP_NAME = os.environ['BUTTON_CHIP']
-    LINE_NUMBER = os.environ['BUTTON_LINE']
+    line = OutputLine(os.environ['BUTTON_CHIP'],
+                      int(os.environ['BUTTON_LINE']),
+                      consumer='hat_button', value=1)
 
     s = ''
-    chip = gpiod.Chip(str(CHIP_NAME))
-    line = chip.get_line(int(LINE_NUMBER))
-    line.request(consumer='hat_button', type=gpiod.LINE_REQ_DIR_OUT)
-    line.set_value(1)
-
     while True:
         s = s[-size:] + str(line.get_value())
         for t, p in pattern.items():
@@ -164,13 +207,13 @@ def get_func(key):
 
 
 def disk_turn_on():
-    line1 = gpiod.Chip(os.environ['SATA_CHIP']).get_line(int(os.environ['SATA_LINE_1']))
-    line1.request(consumer='SATA_LINE_1', type=gpiod.LINE_REQ_DIR_OUT)
-    line1.set_value(1)
-    line2 = gpiod.Chip(os.environ['SATA_CHIP']).get_line(int(os.environ['SATA_LINE_2']))
-    line2.request(consumer='SATA_LINE_2', type=gpiod.LINE_REQ_DIR_OUT)
-    line2.set_value(1)
+    # Keep references alive so the line requests are not released.
+    for name in ('SATA_LINE_1', 'SATA_LINE_2'):
+        disk_lines.append(OutputLine(os.environ['SATA_CHIP'],
+                                     int(os.environ[name]),
+                                     consumer=name, value=1))
 
 
+disk_lines = []
 conf = {'disk': [], 'idx': mp.Value('d', -1), 'run': mp.Value('d', 1)}
 conf.update(read_conf())
